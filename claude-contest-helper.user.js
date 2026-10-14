@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.5.0
+// @version      0.6.0
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @match        https://codeforces.com/*
@@ -23,6 +23,9 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      api.anthropic.com
+// @connect      vjudge.net
+// @connect      vjudge.net.cn
+// @connect      *
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -263,24 +266,37 @@
   }
 
   async function copyMarkdown() {
-    const md = await buildMessage();
-    if (md) { GM_setClipboard(md, 'text'); toast('已复制题目 Markdown'); }
+    const msg = await buildMessage();
+    if (!msg) return;
+    GM_setClipboard(msg.text, 'text');
+    toast(msg.pdfUrl ? '本题只有 PDF 题面，已复制标题和 PDF 链接' : '已复制题目 Markdown');
   }
 
   async function sendToClaude() {
-    const message = await buildMessage();
-    if (!message) return;
-    GM_setClipboard(message, 'text'); // 兜底：自动填入失败时可直接粘贴
+    const msg = await buildMessage();
+    if (!msg) return;
+    GM_setClipboard(msg.text, 'text'); // 兜底：自动填入失败时可直接粘贴
+    let pdf = null;
+    if (msg.pdfUrl) {
+      toast('本题只有 PDF 题面，正在下载 PDF…');
+      try {
+        pdf = { name: msg.pdfName, data: await fetchBase64(msg.pdfUrl) };
+      } catch (e) {
+        console.error('[Contest→Claude]', e);
+        toast('PDF 下载失败，只发送了标题和链接');
+      }
+    }
     if (cfg('mode') === 'api') {
-      askApi(message);
+      askApi(msg.text, pdf);
     } else {
-      GM_setValue(PENDING_KEY, { prompt: message, autoSend: cfg('autoSend'), ts: Date.now() });
+      GM_setValue(PENDING_KEY, { prompt: msg.text, pdf, autoSend: cfg('autoSend'), ts: Date.now() });
       GM_openInTab(cfg('projectUrl') || 'https://claude.ai/new', { active: true, insert: true });
-      toast('已打开 claude.ai（题面也已复制到剪贴板）');
+      toast(pdf ? '已打开 claude.ai，PDF 会作为附件上传' : '已打开 claude.ai（题面也已复制到剪贴板）');
     }
   }
 
-  // 只发送题目本身（标题、链接、题面），不附加任何提示词——提示词由 Claude 项目的自定义指令提供
+  // 只发送题目本身（标题、链接、题面），不附加任何提示词——提示词由 Claude 项目的自定义指令提供。
+  // 返回 { text, pdfUrl?, pdfName? }；只有 PDF 题面时 text 只含标题和链接，PDF 作为附件发送。
   async function buildMessage() {
     const sel = String(window.getSelection() || '').trim();
     let problem;
@@ -289,11 +305,40 @@
     } else {
       try { problem = await extractProblem(); } catch (e) { console.error('[Contest→Claude]', e); }
     }
+    if (problem?.pdfUrl) {
+      const title = problem.title.trim();
+      return {
+        text: `# ${title}\n\n${location.href}\n\n题面见 PDF：${problem.pdfUrl}`,
+        pdfUrl: problem.pdfUrl,
+        pdfName: title.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) + '.pdf',
+      };
+    }
     if (!problem || !problem.statement.trim()) {
       toast('没能识别题面，请先选中题目文字再点按钮');
       return null;
     }
-    return `# ${problem.title.trim()}\n\n${location.href}\n\n${normalizeMath(problem.statement.trim())}`;
+    return { text: `# ${problem.title.trim()}\n\n${location.href}\n\n${normalizeMath(problem.statement.trim())}` };
+  }
+
+  // 下载文件并转成 base64。同源用 fetch；跨域（比如 PDF 放在 CDN 上）用 GM_xmlhttpRequest
+  async function fetchBase64(url) {
+    let buf;
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      buf = await res.arrayBuffer();
+    } catch (_) {
+      buf = await new Promise((resolve, reject) => GM_xmlhttpRequest({
+        method: 'GET', url, responseType: 'arraybuffer',
+        onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r.response) : reject(new Error('HTTP ' + r.status))),
+        onerror: reject, ontimeout: reject,
+      }));
+    }
+    const bytes = new Uint8Array(buf);
+    if (bytes.length > 30 * 1024 * 1024) throw new Error('PDF 超过 30MB');
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
   }
 
   // 统一公式定界符（代码块内不动）：Codeforces 原始题面用 $$$x$$$ 和 $$$$$$x$$$$$$
@@ -359,11 +404,14 @@
     const doc = new DOMParser().parseFromString(html, 'text/html');
 
     let statement = '';
+    let pdfUrl = null;
+    const jsonText = doc.querySelector('textarea.data-json-container')?.value || '';
     try {
-      const data = JSON.parse(doc.querySelector('textarea.data-json-container')?.value || 'null');
+      const data = JSON.parse(jsonText || 'null');
       statement = (data?.sections || []).map((s) => {
         const v = s.value || {};
         let body = v.content || '';
+        if (/pdf/i.test(v.format || '')) { pdfUrl = pdfUrl || findPdfUrl(body); return ''; }
         if (v.format !== 'MD') {
           const div = doc.createElement('div');
           div.innerHTML = body;
@@ -372,7 +420,20 @@
         return (s.title ? `## ${s.title}\n\n` : '') + body.trim();
       }).filter(Boolean).join('\n\n');
     } catch (_) { /* ignore */ }
-    if (!statement) statement = htmlToMarkdown(doc.body);
+    if (!statement) {
+      const body = doc.body.cloneNode(true);
+      body.querySelectorAll('textarea').forEach((e) => e.remove());
+      statement = htmlToMarkdown(body);
+    }
+
+    // 只有 PDF 的题：题面里几乎没有文字。先在描述页里找 PDF 地址，找不到就用左侧面板的 PDF 按钮
+    const textLen = statement.replace(/^#+ .*$/gm, '').replace(/\s/g, '').length;
+    if (!pdfUrl && textLen < 80) {
+      pdfUrl = findPdfUrl(html + '\n' + jsonText)
+        || document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href');
+    }
+    if (pdfUrl && textLen < 80) pdfUrl = new URL(pdfUrl, frame.src).href;
+    else pdfUrl = null;
 
     // 标题：先试已知的 id，再找形如“A - MST in Modulo Graph”的标题元素
     const titleEl = document.querySelector('#problem-title, #prob-title h2, #prob-title, .problem-title')
@@ -381,7 +442,17 @@
     // 题目页 / 比赛页上方的时空限制等信息
     const props = [...document.querySelectorAll('#prob-properties dt')]
       .map((dt) => `${dt.textContent.trim()}：${dt.nextElementSibling?.textContent.trim() || ''}`);
-    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement };
+    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement, pdfUrl };
+  }
+
+  // 在 HTML / JSON 文本里找 PDF 地址：pdf.js 查看器的 ?file= 参数，或以 .pdf 结尾的链接
+  function findPdfUrl(text) {
+    if (!text) return null;
+    text = text.replace(/\\\//g, '/').replace(/&amp;/g, '&');
+    const viewer = text.match(/viewer\.html\?(?:[^"'\\\s<>]*&)?file=([^"'&\\\s<>]+)/);
+    if (viewer) return decodeURIComponent(viewer[1]);
+    const direct = text.match(/(?:https?:)?[^"'\\\s<>()]*\.pdf(?:\?[^"'\\\s<>()]*)?/i);
+    return direct ? direct[0] : null;
   }
 
   function extractCodeforces() {
@@ -521,7 +592,7 @@
   // ---------------------------------------------------------------------------
   // API 模式
   // ---------------------------------------------------------------------------
-  function askApi(promptText) {
+  function askApi(promptText, pdf) {
     const key = cfg('apiKey');
     if (!key) {
       alert('API 模式需要先在油猴菜单里「设置 API Key」');
@@ -540,7 +611,12 @@
       data: JSON.stringify({
         model: cfg('model'),
         max_tokens: cfg('maxTokens'),
-        messages: [{ role: 'user', content: promptText }],
+        messages: [{
+          role: 'user',
+          content: pdf
+            ? [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf.data } }, { type: 'text', text: promptText }]
+            : promptText,
+        }],
       }),
       timeout: 10 * 60 * 1000,
       onload: (res) => {
@@ -619,6 +695,7 @@
 
     waitFor(() => document.querySelector('div[contenteditable="true"]'), 20000).then(async (editor) => {
       if (!editor) { console.warn('[Contest→Claude] 没找到输入框，提示词已在剪贴板中，可手动粘贴'); return; }
+      if (data.pdf) attachPdf(editor, data.pdf);
       editor.focus();
       // ProseMirror 能正确处理 insertText；失败则模拟粘贴
       const ok = document.execCommand('insertText', false, data.prompt);
@@ -634,6 +711,25 @@
       }, 10000);
       if (sendBtn) sendBtn.click();
     });
+  }
+
+  // 上传 PDF 附件：优先用页面上的文件选择框，没有就模拟粘贴文件
+  function attachPdf(editor, pdf) {
+    const bin = atob(pdf.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const file = new File([bytes], pdf.name || 'problem.pdf', { type: 'application/pdf' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = document.querySelector('input[type="file"][data-testid="file-upload"]')
+      || [...document.querySelectorAll('input[type="file"]')].find((i) => !i.accept || /pdf|\*/.test(i.accept))
+      || document.querySelector('input[type="file"]');
+    if (input) {
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }
   }
 
   function waitFor(fn, timeout) {

@@ -10,7 +10,7 @@
 | AtCoder | `#task-statement`，优先英文版，从 KaTeX annotation 还原公式，附带时空限制 |
 | 洛谷 | 优先读页面内嵌的 JSON（原始 Markdown 题面 + 样例），失败时退回读 DOM |
 | LeetCode / 力扣 | 题目描述区域 |
-| Vjudge | 比赛页 `#problem/X` 和单题页 `/problem/...`，从题面 iframe 对应的描述页提取，`$$$x$$$` 等 CF 原始公式写法统一成 `$x$` |
+| Vjudge | 比赛页 `#problem/X` 和单题页 `/problem/...`，从题面 iframe 对应的描述页提取，`$$$x$$$` 等 CF 原始公式写法统一成 `$x$`；只有 PDF 的题会下载 PDF 作为附件发给 Claude |
 | 代码源 newoj（Hydro） | 优先读 `UiContext.pdoc` 里的原始 Markdown，失败时读 `.problem-content` |
 
 按钮位置：Vjudge 放在左侧面板里（PDF 按钮下面，可在油猴菜单「Vjudge 侧边栏按钮」里隐藏）；其它网站贴在屏幕边缘，平时只露出图标，鼠标移上去展开；按住拖动可以上下移动，拖到左半屏就贴到左边，位置会记住（菜单「重置悬浮标签位置」可恢复）。
@@ -41,6 +41,8 @@
 其它菜单项：Vjudge 侧边栏按钮显示/隐藏、API 模型 ID、复制题目 Markdown、重置悬浮标签位置。API 模式不经过项目，所以不会带上项目的自定义指令。
 
 ## 注意
+
+- Vjudge 上只有 PDF 题面的题：「问 Claude」会把 PDF 下载下来，网页版作为附件上传到对话里，API 模式作为 document 发送；「复制 MD」只能复制标题和 PDF 链接。PDF 可能放在其它域名上，第一次下载时油猴可能会弹窗询问是否允许跨域访问，选允许即可。
 
 - **不要在正式比赛（rated contest）中使用。** Codeforces 等平台明确禁止比赛中使用 AI 解题，违规会被封号；请只在赛后补题、练习时使用。
 - 网页版模式依赖 claude.ai 的页面结构（`contenteditable` 输入框、`aria-label="Send message"` 的发送按钮），改版后可能需要调整 `runOnClaude()` 里的选择器。
