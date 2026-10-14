@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.5
+// @version      0.6.6
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -264,10 +264,12 @@
     GM_registerMenuCommand('复制题目 Markdown', copyMarkdown);
     if (isVjudge) {
       GM_registerMenuCommand('调试：复制 Vjudge 描述页源码', async () => {
-        const frame = document.querySelector('iframe#frame-description, iframe[src*="/problem/description/"]');
+        const frame = findDescFrame();
         if (!frame) { toast('没找到题面 iframe'); return; }
-        const html = await (await fetch(frame.src, { credentials: 'include' })).text();
-        GM_setClipboard(`${frame.src}\n\n${html.slice(0, 30000)}`, 'text');
+        const html = await (await fetch(frameUrl(frame), { credentials: 'include' })).text();
+        const all = descFrames().map((f) => `${f === frame ? '* ' : '  '}${frameUrl(f)}${frameUrl(f) !== f.src ? `（src 属性：${f.src}）` : ''}${isVisible(f) ? '' : '（隐藏）'}`).join('\n');
+        const activeKey = document.querySelector('#prob-descs .active[data-key]')?.dataset.key || '无';
+        GM_setClipboard(`当前选中的题面 key：${activeKey}\n所有题面 iframe（* 为本次使用的）：\n${all}\n\n${html.slice(0, 30000)}`, 'text');
         toast('已复制描述页源码（前 3 万字符）');
       });
     }
@@ -428,12 +430,37 @@
     return { title, statement: statement ? limits + statement : '' };
   }
 
+  // Vjudge 切换题目时，旧题目的题面 iframe 可能还留在页面里（只是隐藏了），不能直接取第一个。
+  // 优先取地址里带左侧面板当前选中题面 key 的那个，其次取可见的那个。
+  function descFrames() {
+    return [...document.querySelectorAll('iframe#frame-description, iframe[src*="/problem/description/"]')];
+  }
+  function isVisible(el) {
+    return el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  }
+  // iframe 实际加载的地址：页面可能直接让 iframe 跳转而不改 src 属性，所以优先读 contentWindow.location
+  function frameUrl(f) {
+    try {
+      const href = f.contentWindow?.location.href;
+      if (href && href !== 'about:blank') return href;
+    } catch (_) { /* 跨域时读不到 */ }
+    return f.src;
+  }
+  function findDescFrame() {
+    const frames = descFrames().filter((f) => frameUrl(f));
+    const key = document.querySelector('#prob-descs .active[data-key]')?.dataset.key;
+    return (key && frames.find((f) => frameUrl(f).includes(`/problem/description/${key}`)))
+      || frames.find(isVisible)
+      || frames[0] || null;
+  }
+
   // Vjudge：题面在 iframe（/problem/description/...）里，同源，直接重新请求一份解析。
   // 描述页里通常有一个 JSON（textarea.data-json-container），按 section 存着原始题面；没有就读 DOM。
   async function extractVjudge() {
-    const frame = document.querySelector('iframe#frame-description, iframe[src*="/problem/description/"]');
-    if (!frame || !frame.getAttribute('src')) return null;
-    const html = await (await fetch(frame.src, { credentials: 'include' })).text();
+    const frame = findDescFrame();
+    if (!frame) return null;
+    const src = frameUrl(frame);
+    const html = await (await fetch(src, { credentials: 'include' })).text();
     const doc = new DOMParser().parseFromString(html, 'text/html');
 
     let statement = '';
@@ -487,7 +514,7 @@
         pdfUrl !== 'pdf' && pdfUrl,
         descPdf,
         document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href'),
-      ].filter(Boolean).map((u) => new URL(u, frame.src).href))];
+      ].filter(Boolean).map((u) => new URL(u, src).href))];
       if (!pdfUrls.length) pdfUrls = null;
     }
 
