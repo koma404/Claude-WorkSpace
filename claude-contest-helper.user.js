@@ -30,7 +30,7 @@
 // @connect      vjudge.net.cn
 // @connect      cdn.vjudge.net.cn
 // @connect      *
-// @run-at       document-idle
+// @run-at       document-start
 // @noframes
 // ==/UserScript==
 
@@ -84,21 +84,36 @@
   const isVjudge = location.hostname === 'vjudge.net';
   const HAS_NATIVE_COPY = /^(www\.luogu\.com\.cn|newoj\.daimayuan\.top)$/.test(location.hostname);
 
-  registerMenu();
-  injectStyle();
-  const edgeTab = createEdgeTab();
-  let sidebarRow = null;
-  syncUi();
-  window.addEventListener('hashchange', syncUi);
-  window.addEventListener('popstate', syncUi);
-  window.addEventListener('resize', () => placeEdgeTab(edgeTab, cfg('tabPos')));
-  setInterval(syncUi, 500);
-  // 在 window 捕获阶段监听，避免被网站自己的快捷键处理拦掉
+  // 脚本在 document-start 运行：赶在网站自己的脚本之前，在 window 捕获阶段注册复制和快捷键监听。
+  // 有的 OJ（如代码源）会拦截 copy 事件和按键，后注册的监听器会被它们挡掉。
+  let pendingCopy = null; // 脚本自己要写入剪贴板的文本
+  window.addEventListener('copy', (e) => {
+    if (pendingCopy === null) return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', pendingCopy);
+  }, true);
   window.addEventListener('keydown', (e) => {
     if (!e.altKey || !e.shiftKey || !isProblemPage()) return;
-    if (e.code === 'KeyC') { e.preventDefault(); sendToClaude(); }
-    if (e.code === 'KeyM') { e.preventDefault(); copyMarkdown(); }
+    if (e.code === 'KeyC') { e.preventDefault(); e.stopImmediatePropagation(); sendToClaude(); }
+    if (e.code === 'KeyM') { e.preventDefault(); e.stopImmediatePropagation(); copyMarkdown(); }
   }, true);
+
+  // 界面要等页面 DOM 就绪再创建
+  let edgeTab = null;
+  let sidebarRow = null;
+  const onReady = (fn) => (document.readyState === 'loading'
+    ? document.addEventListener('DOMContentLoaded', fn, { once: true }) : fn());
+  onReady(() => {
+    registerMenu();
+    injectStyle();
+    edgeTab = createEdgeTab();
+    syncUi();
+    window.addEventListener('hashchange', syncUi);
+    window.addEventListener('popstate', syncUi);
+    window.addEventListener('resize', () => placeEdgeTab(edgeTab, cfg('tabPos')));
+    setInterval(syncUi, 500);
+  });
 
   // Vjudge：有左侧面板（#prob-operation）时把按钮放进面板，否则用屏幕边缘的悬浮标签
   function syncUi() {
@@ -331,28 +346,23 @@
 
   // 写剪贴板。有的 OJ 会监听 copy 事件拦截或改写复制内容，GM_setClipboard 可能因此失效，所以：
   // 1. 优先用 navigator.clipboard（不触发页面的 copy 事件）
-  // 2. 再用 execCommand('copy')，同时在捕获阶段抢先处理 copy 事件，写入我们的内容
+  // 2. 再用 execCommand('copy')，由脚本开头抢先注册的 copy 监听器写入我们的内容
   // 3. 最后才用 GM_setClipboard
   async function copyText(text) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch (_) { /* 页面没有焦点等情况会失败 */ }
-    const onCopy = (e) => {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-      e.clipboardData.setData('text/plain', text);
-    };
     const ta = document.createElement('textarea');
     try {
-      window.addEventListener('copy', onCopy, true);
+      pendingCopy = text; // 由开头注册的 copy 监听器写入，网站拦不到
       ta.value = text;
       Object.assign(ta.style, { position: 'fixed', top: '0', left: '0', opacity: '0' });
       document.body.appendChild(ta);
       ta.select();
       if (document.execCommand('copy')) return true;
     } catch (_) { /* ignore */ } finally {
-      window.removeEventListener('copy', onCopy, true);
+      pendingCopy = null;
       ta.remove();
     }
     try {
