@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.8
+// @version      0.6.9
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -128,7 +128,8 @@
         box-shadow:0 2px 10px rgba(0,0,0,.25); transform:translateX(calc(100% - 34px)); transition:transform .2s ease; }
       #cc-edge-tab.cc-left { right:auto; left:0; flex-direction:row-reverse; padding:0 0 0 4px;
         border-radius:0 999px 999px 0; transform:translateX(calc(-100% + 34px)); }
-      #cc-edge-tab:hover, #cc-edge-tab:focus-within, #cc-edge-tab.cc-dragging { transform:translateX(0); }
+      #cc-edge-tab.cc-open, #cc-edge-tab.cc-dragging { transform:translateX(0); }
+      #cc-edge-tab .cc-handle:hover { background:rgba(0,0,0,.12); border-radius:999px; }
       #cc-edge-tab.cc-dragging { transition:none; }
       #cc-edge-tab .cc-handle { display:flex; align-items:center; justify-content:center; width:34px; height:34px; flex:none; cursor:grab; }
       #cc-edge-tab.cc-dragging, #cc-edge-tab.cc-dragging * { cursor:grabbing; }
@@ -148,20 +149,27 @@
     return i;
   }
 
-  // 其它网站：贴在屏幕边缘，平时只露出图标，鼠标移上去展开；按住拖动可换位置（拖到左半屏就贴左边）
+  // 其它网站：贴在屏幕边缘，平时只露出图标，点图标展开/收起；按住拖动可换位置（拖到左半屏就贴左边）
   function createEdgeTab() {
     const tab = document.createElement('div');
     tab.id = 'cc-edge-tab';
     const handle = document.createElement('span');
     handle.className = 'cc-handle';
-    handle.title = '按住拖动可调整位置';
+    handle.title = '点击展开 / 收起，按住拖动可调整位置';
+    handle.setAttribute('role', 'button');
+    handle.tabIndex = 0;
     handle.appendChild(createIcon());
+    const toggle = () => tab.classList.toggle('cc-open');
+    handle.addEventListener('click', toggle);
+    handle.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    // 点页面其它地方收起
+    document.addEventListener('pointerdown', (e) => { if (!tab.contains(e.target)) tab.classList.remove('cc-open'); }, true);
     const mk = (label, title, fn) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = label;
       b.title = title;
-      b.addEventListener('click', fn);
+      b.addEventListener('click', () => { tab.classList.remove('cc-open'); fn(); });
       return b;
     };
     tab.append(handle, mk('问 Claude', '提取题面并发送给 Claude（Alt+Shift+C）。选中文字时只发送选中部分。', sendToClaude));
@@ -276,25 +284,41 @@
       });
     }
     if (!isVjudge) {
-      GM_registerMenuCommand('调试：复制页面信息', () => {
-        let ctx = '无';
-        try {
-          const ui = unsafeWindow.UiContext;
-          if (ui) ctx = `UiContext 字段：${Object.keys(ui).join(', ')}\npdoc 字段：${ui.pdoc ? Object.keys(ui.pdoc).join(', ') : '无'}\n`
-            + `pdoc.content 类型：${typeof ui.pdoc?.content}，开头：${String(ui.pdoc?.content ?? '').slice(0, 300)}`;
-        } catch (e) { ctx = '读取出错：' + e.message; }
-        const main = document.querySelector('.problem-content, [data-fragment-id="problem-description"], main, #main, .main, article') || document.body;
-        const clone = main.cloneNode(true);
-        clone.querySelectorAll('script, style, svg, #cc-edge-tab').forEach((e) => e.remove());
-        GM_setClipboard(`${location.href}\n${ctx}\n正文元素：<${main.tagName.toLowerCase()} id="${main.id}" class="${main.className}">\n\n${clone.outerHTML.slice(0, 30000)}`, 'text');
-        toast('已复制页面信息（前 3 万字符）');
-      });
+      GM_registerMenuCommand('调试：复制页面信息', debugPageInfo);
     }
     GM_registerMenuCommand('重置悬浮标签位置', () => {
       GM_deleteValue('tabPos');
       edgeTab.classList.remove('cc-left');
       edgeTab.style.top = '';
     });
+  }
+
+  // 调试：收集页面信息。每一步单独 try，出错也照样输出；结果同时显示在面板里，剪贴板失败时可以手动复制
+  async function debugPageInfo() {
+    const parts = [location.href, '脚本版本：' + (typeof GM_info !== 'undefined' ? GM_info.script?.version : '?')];
+    const step = (label, fn) => {
+      try { parts.push(`${label}：${fn()}`); } catch (e) { parts.push(`${label}：出错 ${e && e.stack || e}`); }
+    };
+    step('UiContext 字段', () => { const ui = unsafeWindow.UiContext; return ui ? Object.keys(ui).join(', ') : '无'; });
+    step('pdoc 字段', () => { const p = unsafeWindow.UiContext?.pdoc; return p ? Object.keys(p).join(', ') : '无'; });
+    step('pdoc.content 开头', () => String(unsafeWindow.UiContext?.pdoc?.content ?? '无').slice(0, 300));
+    step('题面提取', () => '见下方');
+    try {
+      const p = await extractProblem();
+      parts.push(p ? `  标题：${p.title}\n  题面开头：${String(p.statement).slice(0, 300)}` : '  返回空');
+    } catch (e) { parts.push('  出错 ' + (e && e.stack || e)); }
+    let html = '';
+    step('正文元素', () => {
+      const main = document.querySelector('.problem-content, [data-fragment-id="problem-description"], main, #main, .main, article') || document.body;
+      const clone = main.cloneNode(true);
+      clone.querySelectorAll('script, style, svg, #cc-edge-tab').forEach((e) => e.remove());
+      html = clone.outerHTML.slice(0, 30000);
+      return `<${main.tagName.toLowerCase()} id="${main.id}" class="${String(main.className)}">`;
+    });
+    const text = parts.join('\n') + '\n\n' + html;
+    console.log('[Contest→Claude] 调试信息\n' + text);
+    showPanel(text);
+    try { GM_setClipboard(text, 'text'); toast('已复制页面信息；也可以在面板里点「复制全部」'); } catch (e) { toast('复制失败，请在面板里手动复制'); }
   }
 
   async function copyMarkdown() {
