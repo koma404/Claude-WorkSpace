@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.2
+// @version      0.6.3
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -30,6 +30,7 @@
 // @connect      vjudge.net.cn
 // @connect      *
 // @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
 (function () {
@@ -275,7 +276,14 @@
     toast(msg.pdfUrl ? '本题只有 PDF 题面，已复制标题和 PDF 链接' : '已复制题目 Markdown');
   }
 
+  let sending = false;
   async function sendToClaude() {
+    if (sending) return; // 下载 PDF 要一会儿，防止连点发两次
+    sending = true;
+    try { await doSendToClaude(); } finally { sending = false; }
+  }
+
+  async function doSendToClaude() {
     const msg = await buildMessage();
     if (!msg) return;
     GM_setClipboard(msg.text, 'text'); // 兜底：自动填入失败时可直接粘贴
@@ -725,7 +733,7 @@
         dt.setData('text/plain', data.prompt);
         editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       }
-      if (data.pdf && !(await attachPdf(editor, data.pdf))) return;
+      if (data.pdf) attachPdf(editor, data.pdf);
       if (!data.autoSend) return;
       const sendBtn = await waitFor(() => {
         const b = document.querySelector('button[aria-label="Send message"], button[aria-label="Send Message"], button[aria-label="发送消息"]');
@@ -735,62 +743,15 @@
     });
   }
 
-  // 上传 PDF 附件。依次尝试三种方式，每种之后检查附件是否真的留在输入框里：
-  // 1. 模拟粘贴文件  2. 模拟拖放文件  3. 输入框附近的文件选择框
-  // 都失败就把 PDF 下载到本地，提示手动拖进来。
-  async function attachPdf(editor, pdf) {
+  // 上传 PDF 附件：模拟粘贴文件（实测在 claude.ai 上有效）。
+  // 不再做“上传成功”检测和换方式重试——附件里不一定显示文件名，检测不可靠，反而会重复上传。
+  function attachPdf(editor, pdf) {
     const bin = atob(pdf.data);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const name = pdf.name || 'problem.pdf';
-    const makeDt = () => {
-      const dt = new DataTransfer();
-      dt.items.add(new File([bytes], name, { type: 'application/pdf' }));
-      return dt;
-    };
-    // 判断附件是否在：文件名在输入框以外出现的次数变多了（输入框里的标题文字本身也含文件名，要扣掉）
-    const stem = name.replace(/\.pdf$/i, '').slice(0, 12);
-    const count = (t) => t.split(stem).length - 1;
-    const outside = () => count(document.body.innerText) - count(editor.innerText);
-    const baseline = outside();
-    const attached = () => outside() > baseline;
-
-    const methods = {
-      paste: () => editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: makeDt(), bubbles: true, cancelable: true })),
-      drop: () => {
-        const dt = makeDt();
-        for (const type of ['dragenter', 'dragover', 'drop']) {
-          editor.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
-        }
-      },
-      input: () => {
-        // 找离输入框最近的文件选择框，避免选到项目知识库的上传框
-        let el = editor;
-        while (el && !el.querySelector('input[type="file"]')) el = el.parentElement;
-        const input = el?.querySelector('input[type="file"]');
-        if (!input) return false;
-        input.files = makeDt().files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      },
-    };
-    for (const [label, run] of Object.entries(methods)) {
-      if (run() === false) continue;
-      // 附件会先出现再上传，上传失败会消失，所以要等一会儿再确认
-      await sleep(4000);
-      if (attached()) {
-        console.info('[Contest→Claude] PDF 已通过', label, '方式添加');
-        return true;
-      }
-      console.warn('[Contest→Claude] PDF 通过', label, '方式添加失败');
-    }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    alert('PDF 自动上传失败，已下载到本地，请把它拖进对话框。');
-    return false;
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], pdf.name || 'problem.pdf', { type: 'application/pdf' }));
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   }
 
   function sleep(ms) {
