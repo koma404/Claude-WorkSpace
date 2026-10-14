@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.4
+// @version      0.6.5
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -621,12 +621,31 @@
       if (tag === 'LI') { out += '\n- ' + nodeToMd(n).trim() + '\n'; continue; }
       if (tag === 'CODE') { out += '`' + n.textContent + '`'; continue; }
       if (tag === 'STRONG' || tag === 'B') { const t = nodeToMd(n).trim(); out += t ? ` **${t}** ` : ''; continue; }
-      if (tag === 'TR') { out += '\n|' + nodeToMd(n) + '\n'; continue; }
-      if (tag === 'TD' || tag === 'TH') { out += ' ' + nodeToMd(n).trim() + ' |'; continue; }
+      if (tag === 'TABLE') { out += '\n\n' + tableToMd(n) + '\n\n'; continue; }
       const inner = nodeToMd(n);
       out += BLOCK_TAGS.has(tag) ? '\n' + inner + '\n' : inner;
     }
     return out;
+  }
+
+  // 表格：样例表格（单元格里是 <pre>，如 Vjudge 的 vjudge_sample）展开成“标题 + 代码块”，普通表格转成 Markdown 表格
+  function tableToMd(table) {
+    const rows = [...table.querySelectorAll('tr')].filter((tr) => tr.closest('table') === table);
+    const cellsOf = (tr) => [...tr.children].filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
+    if (!rows.length) return '';
+    if (table.querySelector('pre')) {
+      const first = cellsOf(rows[0]);
+      const header = first.every((c) => !c.querySelector('pre')) ? first.map((c) => nodeToMd(c).trim()) : null;
+      const body = header ? rows.slice(1) : rows;
+      return body.map((tr, i) => cellsOf(tr).map((c, j) => {
+        const label = [header?.[j], body.length > 1 ? `#${i + 1}` : ''].filter(Boolean).join(' ');
+        return (label ? `**${label}**\n` : '') + nodeToMd(c).trim();
+      }).join('\n\n')).join('\n\n');
+    }
+    const lines = rows.map((tr) => '| ' + cellsOf(tr)
+      .map((c) => nodeToMd(c).trim().replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|')).join(' | ') + ' |');
+    lines.splice(1, 0, '|' + ' --- |'.repeat(Math.max(1, cellsOf(rows[0]).length)));
+    return lines.join('\n');
   }
 
   // <pre> 内的文本：Codeforces 样例每行是一个 div，需要换行
