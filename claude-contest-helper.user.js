@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.3
+// @version      0.6.4
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -262,6 +262,15 @@
       if (v) GM_setValue('model', v.trim());
     });
     GM_registerMenuCommand('复制题目 Markdown', copyMarkdown);
+    if (isVjudge) {
+      GM_registerMenuCommand('调试：复制 Vjudge 描述页源码', async () => {
+        const frame = document.querySelector('iframe#frame-description, iframe[src*="/problem/description/"]');
+        if (!frame) { toast('没找到题面 iframe'); return; }
+        const html = await (await fetch(frame.src, { credentials: 'include' })).text();
+        GM_setClipboard(`${frame.src}\n\n${html.slice(0, 30000)}`, 'text');
+        toast('已复制描述页源码（前 3 万字符）');
+      });
+    }
     GM_registerMenuCommand('重置悬浮标签位置', () => {
       GM_deleteValue('tabPos');
       edgeTab.classList.remove('cc-left');
@@ -430,33 +439,53 @@
     let statement = '';
     let pdfUrl = null;
     const jsonText = doc.querySelector('textarea.data-json-container')?.value || '';
-    try {
-      const data = JSON.parse(jsonText || 'null');
-      statement = (data?.sections || []).map((s) => {
-        const v = s.value || {};
-        let body = v.content || '';
-        if (/pdf/i.test(v.format || '')) { pdfUrl = pdfUrl || findPdfUrl(body); return ''; }
-        if (v.format !== 'MD') {
-          const div = doc.createElement('div');
-          div.innerHTML = body;
-          body = htmlToMarkdown(div);
-        }
-        return (s.title ? `## ${s.title}\n\n` : '') + body.trim();
-      }).filter(Boolean).join('\n\n');
-    } catch (_) { /* ignore */ }
-    if (!statement) {
+    let data = null;
+    try { data = JSON.parse(jsonText || 'null'); } catch (_) { /* ignore */ }
+    // JSON 结构不固定，递归找所有带 content 字符串的节点（通常是 sections[].value.content）
+    const sections = [];
+    (function walk(node, title) {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach((n) => walk(n, '')); return; }
+      const v = node.value && typeof node.value === 'object' ? node.value : node;
+      if (typeof v.content === 'string') { sections.push({ title: node.title || title || '', format: v.format || '', content: v.content }); return; }
+      Object.values(node).forEach((n) => walk(n, node.title));
+    })(data, '');
+    statement = sections.map((sec) => {
+      let body = sec.content;
+      if (/pdf/i.test(sec.format)) { pdfUrl = pdfUrl || findPdfUrl(body) || 'pdf'; return ''; }
+      if (!/^(md|markdown)$/i.test(sec.format)) {
+        const div = doc.createElement('div');
+        div.innerHTML = body;
+        body = htmlToMarkdown(div);
+      }
+      return body.trim() ? (sec.title ? `## ${sec.title}\n\n` : '') + body.trim() : '';
+    }).filter(Boolean).join('\n\n');
+
+    const plainLen = (t) => t.replace(/^#+ .*$/gm, '').replace(/\s/g, '').length;
+    if (plainLen(statement) < 80) {
+      // 兜底 1：描述页正文（去掉存数据的 textarea）
       const body = doc.body.cloneNode(true);
-      body.querySelectorAll('textarea').forEach((e) => e.remove());
-      statement = htmlToMarkdown(body);
+      body.querySelectorAll('textarea, script, style').forEach((e) => e.remove());
+      const fromBody = htmlToMarkdown(body);
+      if (plainLen(fromBody) > plainLen(statement)) statement = fromBody;
+    }
+    if (plainLen(statement) < 80 && jsonText && !data) {
+      // 兜底 2：textarea 里不是 JSON，当成 HTML
+      const div = doc.createElement('div');
+      div.innerHTML = jsonText;
+      const fromText = htmlToMarkdown(div);
+      if (plainLen(fromText) > plainLen(statement)) statement = fromText;
     }
 
-    // 只有 PDF 的题：题面里几乎没有文字。先在描述页里找 PDF 地址，找不到就用左侧面板的 PDF 按钮
-    const textLen = statement.replace(/^#+ .*$/gm, '').replace(/\s/g, '').length;
+    // 只有 PDF 的题：正文几乎没有文字，并且描述页里确实有 PDF 的迹象（PDF 格式的 section、PDF 链接或嵌入的查看器）。
+    // 左侧面板的 PDF 按钮每道题都有，只能当下载地址，不能当判断依据。
     let pdfUrls = null;
-    if (textLen < 80) {
+    const descPdf = findPdfUrl(html + '\n' + jsonText);
+    const looksPdf = pdfUrl || descPdf || doc.querySelector('iframe, embed, object');
+    if (plainLen(statement) < 80 && looksPdf) {
       pdfUrls = [...new Set([
-        pdfUrl,
-        findPdfUrl(html + '\n' + jsonText),
+        pdfUrl !== 'pdf' && pdfUrl,
+        descPdf,
         document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href'),
       ].filter(Boolean).map((u) => new URL(u, frame.src).href))];
       if (!pdfUrls.length) pdfUrls = null;
