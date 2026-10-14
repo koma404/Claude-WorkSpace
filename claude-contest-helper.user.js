@@ -1,16 +1,17 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.2.0
-// @description  在 Codeforces / AtCoder / 洛谷 / LeetCode 题目页面一键提取题面，发送给 Claude（网页版或 API）
+// @version      0.3.0
+// @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @match        https://codeforces.com/*
 // @match        https://*.codeforces.com/*
 // @match        https://codeforc.es/*
-// @match        https://atcoder.jp/contests/*/tasks/*
-// @match        https://www.luogu.com.cn/problem/*
-// @match        https://leetcode.com/problems/*
-// @match        https://leetcode.cn/problems/*
+// @match        https://atcoder.jp/*
+// @match        https://www.luogu.com.cn/*
+// @match        https://leetcode.com/*
+// @match        https://leetcode.cn/*
+// @match        https://vjudge.net/*
 // @match        https://claude.ai/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -32,8 +33,7 @@
   // ---------------------------------------------------------------------------
   const DEFAULTS = {
     mode: 'web',             // 'web'：打开 claude.ai 自动填入；'api'：调用 Anthropic API 在页面内显示
-    autoSend: true,          // web 模式下填入后是否自动点击发送
-    language: 'C++',         // 期望的代码语言
+    autoSend: false,         // web 模式下填入后是否自动点击发送（默认只填入，由你自己按发送）
     apiKey: '',              // api 模式需要
     model: 'claude-opus-5-5',
     // web 模式下打开的地址：填 Claude 项目链接则在该项目里新建对话；留空则用 https://claude.ai/new
@@ -44,20 +44,17 @@
   const PENDING_KEY = 'pendingPrompt';
   const PENDING_TTL = 2 * 60 * 1000;
 
-  const PROMPT_TEMPLATE = `你是一名经验丰富的算法竞赛选手。请解决下面这道题目。
-
-要求：
-1. 先简要复述题意，给出解题思路和关键观察；
-2. 说明时间复杂度和空间复杂度，确认能在题目限制内通过；
-3. 给出完整、可直接提交的 {lang} 代码（{io}）；
-4. 用题目给出的样例逐一验证你的代码；
-5. 指出容易出错的边界情况。
-
-题目来源：{url}
-
-# {title}
-
-{statement}`;
+  // 只在题目页面显示按钮。Vjudge / LeetCode 是单页应用，URL 变化时不刷新页面，所以要持续检查。
+  const PROBLEM_PAGES = [
+    { host: /(^|\.)codeforces\.com$|^codeforc\.es$/, path: /^\/(problemset\/problem\/\d+\/\w+|problemset\/gymProblem\/\d+\/\w+|(contest|gym)\/\d+\/problem\/\w+|group\/\w+\/contest\/\d+\/problem\/\w+)\/?$/ },
+    { host: /^atcoder\.jp$/, path: /^\/contests\/[^/]+\/tasks\/[^/]+\/?$/ },
+    { host: /^www\.luogu\.com\.cn$/, path: /^\/problem\/(?!list\/?$|solution\/)[\w-]+\/?$/ },
+    { host: /^leetcode\.(com|cn)$/, path: /^\/problems\/[\w-]+(\/description)?\/?$/ },
+    { host: /^vjudge\.net$/, path: /^\/problem\/(?!description\/)[^/]+\/?$/ },
+    { host: /^vjudge\.net$/, path: /^\/contest\/\d+\/?$/, hash: /^#problem\/\w+/ },
+  ];
+  const isProblemPage = () => PROBLEM_PAGES.some((r) => r.host.test(location.hostname)
+    && r.path.test(location.pathname) && (!r.hash || r.hash.test(location.hash)));
 
   // ---------------------------------------------------------------------------
   // claude.ai 端：读取待发送的题目并填入输入框
@@ -71,9 +68,14 @@
   // 题目页面端
   // ---------------------------------------------------------------------------
   registerMenu();
-  injectButton();
+  const button = injectButton();
+  const syncButton = () => { button.style.display = isProblemPage() ? 'flex' : 'none'; };
+  syncButton();
+  window.addEventListener('hashchange', syncButton);
+  window.addEventListener('popstate', syncButton);
+  setInterval(syncButton, 500);
   document.addEventListener('keydown', (e) => {
-    if (e.altKey && e.shiftKey && e.code === 'KeyC') {
+    if (e.altKey && e.shiftKey && e.code === 'KeyC' && isProblemPage()) {
       e.preventDefault();
       sendToClaude();
     }
@@ -87,10 +89,6 @@
     GM_registerMenuCommand(`网页版自动发送：${cfg('autoSend') ? '开' : '关'}（点击切换）`, () => {
       GM_setValue('autoSend', !cfg('autoSend'));
       alert('自动发送：' + (cfg('autoSend') ? '开' : '关'));
-    });
-    GM_registerMenuCommand(`代码语言：${cfg('language')}`, () => {
-      const v = prompt('期望的代码语言', cfg('language'));
-      if (v) GM_setValue('language', v.trim());
     });
     GM_registerMenuCommand('设置 API Key', () => {
       const v = prompt('Anthropic API Key（仅保存在本地油猴存储中）', cfg('apiKey'));
@@ -107,58 +105,68 @@
       const v = prompt('模型 ID', cfg('model'));
       if (v) GM_setValue('model', v.trim());
     });
-    GM_registerMenuCommand('仅复制提示词到剪贴板', () => {
-      const p = buildPrompt();
+    GM_registerMenuCommand('仅复制题面到剪贴板', async () => {
+      const p = await buildMessage();
       if (p) { GM_setClipboard(p, 'text'); toast('已复制到剪贴板'); }
     });
   }
 
   function injectButton() {
     const btn = document.createElement('button');
-    btn.textContent = '🤖 问 Claude';
     btn.title = '提取题面并发送给 Claude（Alt+Shift+C）。选中文字时只发送选中部分。';
     Object.assign(btn.style, {
       position: 'fixed', right: '20px', bottom: '20px', zIndex: 2147483646,
+      display: 'none', alignItems: 'center', gap: '6px',
       padding: '10px 16px', border: 'none', borderRadius: '999px', cursor: 'pointer',
-      background: '#d97757', color: '#fff', fontSize: '14px', fontWeight: '600',
+      background: '#d97757', color: '#fff', fontSize: '14px', fontWeight: '600', lineHeight: '1',
       boxShadow: '0 4px 14px rgba(0,0,0,.25)',
     });
+    // 用内联 SVG 画图标，不依赖系统的 emoji 字体
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('aria-hidden', 'true');
+    for (let i = 0; i < 4; i++) {
+      const line = document.createElementNS(NS, 'line');
+      Object.entries({ x1: 12, y1: 2, x2: 12, y2: 22, stroke: 'currentColor', 'stroke-width': 2.6,
+        'stroke-linecap': 'round', transform: `rotate(${i * 45} 12 12)` }).forEach(([k, v]) => line.setAttribute(k, v));
+      svg.appendChild(line);
+    }
+    btn.append(svg, document.createTextNode('问 Claude'));
     btn.addEventListener('click', sendToClaude);
     document.body.appendChild(btn);
+    return btn;
   }
 
-  function sendToClaude() {
-    const promptText = buildPrompt();
-    if (!promptText) return;
-    GM_setClipboard(promptText, 'text'); // 兜底：自动填入失败时可直接粘贴
+  async function sendToClaude() {
+    const message = await buildMessage();
+    if (!message) return;
+    GM_setClipboard(message, 'text'); // 兜底：自动填入失败时可直接粘贴
     if (cfg('mode') === 'api') {
-      askApi(promptText);
+      askApi(message);
     } else {
-      GM_setValue(PENDING_KEY, { prompt: promptText, autoSend: cfg('autoSend'), ts: Date.now() });
+      GM_setValue(PENDING_KEY, { prompt: message, autoSend: cfg('autoSend'), ts: Date.now() });
       GM_openInTab(cfg('projectUrl') || 'https://claude.ai/new', { active: true, insert: true });
-      toast('已打开 claude.ai（提示词也已复制到剪贴板）');
+      toast('已打开 claude.ai（题面也已复制到剪贴板）');
     }
   }
 
-  function buildPrompt() {
+  // 只发送题目本身（标题、链接、题面），不附加任何提示词——提示词由 Claude 项目的自定义指令提供
+  async function buildMessage() {
     const sel = String(window.getSelection() || '').trim();
     let problem;
     if (sel.length > 20) {
       problem = { title: document.title, statement: sel };
     } else {
-      problem = extractProblem();
+      try { problem = await extractProblem(); } catch (e) { console.error('[Contest→Claude]', e); }
     }
     if (!problem || !problem.statement.trim()) {
       toast('没能识别题面，请先选中题目文字再点按钮');
       return null;
     }
-    const isLeetCode = /leetcode\./.test(location.hostname);
-    return PROMPT_TEMPLATE
-      .replace('{lang}', cfg('language'))
-      .replace('{io}', isLeetCode ? '按 LeetCode 给定的函数签名实现' : '使用标准输入输出')
-      .replace('{url}', location.href)
-      .replace('{title}', problem.title.trim())
-      .replace('{statement}', () => problem.statement.trim());
+    return `# ${problem.title.trim()}\n\n${location.href}\n\n${problem.statement.trim()}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -170,7 +178,40 @@
     if (host === 'atcoder.jp') return extractAtCoder();
     if (host === 'www.luogu.com.cn') return extractLuogu();
     if (/leetcode\./.test(host)) return extractLeetCode();
+    if (host === 'vjudge.net') return extractVjudge();
     return null;
+  }
+
+  // Vjudge：题面在 iframe（/problem/description/...）里，同源，直接重新请求一份解析。
+  // 描述页里通常有一个 JSON（textarea.data-json-container），按 section 存着原始题面；没有就读 DOM。
+  async function extractVjudge() {
+    const frame = document.querySelector('iframe#frame-description, iframe[src*="/problem/description/"]');
+    if (!frame || !frame.getAttribute('src')) return null;
+    const html = await (await fetch(frame.src, { credentials: 'include' })).text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    let statement = '';
+    try {
+      const data = JSON.parse(doc.querySelector('textarea.data-json-container')?.value || 'null');
+      statement = (data?.sections || []).map((s) => {
+        const v = s.value || {};
+        let body = v.content || '';
+        if (v.format !== 'MD') {
+          const div = doc.createElement('div');
+          div.innerHTML = body;
+          body = htmlToMarkdown(div);
+        }
+        return (s.title ? `## ${s.title}\n\n` : '') + body.trim();
+      }).filter(Boolean).join('\n\n');
+    } catch (_) { /* ignore */ }
+    if (!statement) statement = htmlToMarkdown(doc.body);
+
+    const titleEl = document.querySelector('#problem-title, #prob-title h2, #prob-title, .problem-title');
+    const title = (titleEl?.textContent || document.title).replace(/\s+/g, ' ');
+    // 题目页 / 比赛页上方的时空限制等信息
+    const props = [...document.querySelectorAll('#prob-properties dl, #prob-properties li, .prob-property, dl.card-text')]
+      .map((e) => e.textContent.replace(/\s+/g, ' ').trim()).filter((t) => /limit|限制/i.test(t));
+    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement };
   }
 
   function extractCodeforces() {
