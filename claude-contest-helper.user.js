@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.1
+// @version      0.6.2
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -280,13 +280,22 @@
     if (!msg) return;
     GM_setClipboard(msg.text, 'text'); // 兜底：自动填入失败时可直接粘贴
     let pdf = null;
-    if (msg.pdfUrl) {
+    if (msg.pdfUrls) {
       toast('本题只有 PDF 题面，正在下载 PDF…');
-      try {
-        pdf = { name: msg.pdfName, data: await fetchBase64(msg.pdfUrl) };
-      } catch (e) {
-        console.error('[Contest→Claude]', e);
-        toast('PDF 下载失败，只发送了标题和链接');
+      // 依次尝试候选地址，只接受真正的 PDF 文件（以 %PDF 开头），避免把网页当 PDF 上传
+      const errors = [];
+      for (const url of msg.pdfUrls) {
+        try {
+          pdf = { name: msg.pdfName, data: await fetchPdfBase64(url) };
+          console.info('[Contest→Claude] PDF 来自', url);
+          break;
+        } catch (e) {
+          errors.push(`${url} → ${e.message}`);
+        }
+      }
+      if (!pdf) {
+        console.error('[Contest→Claude] PDF 下载失败\n' + errors.join('\n'));
+        toast('PDF 下载失败（详情见控制台），只发送标题和链接');
       }
     }
     if (cfg('mode') === 'api') {
@@ -313,6 +322,7 @@
       return {
         text: `# ${title}\n\n${location.href}\n\n题面见 PDF：${problem.pdfUrl}`,
         pdfUrl: problem.pdfUrl,
+        pdfUrls: problem.pdfUrls,
         pdfName: title.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) + '.pdf',
       };
     }
@@ -324,7 +334,7 @@
   }
 
   // 下载文件并转成 base64。同源用 fetch；跨域（比如 PDF 放在 CDN 上）用 GM_xmlhttpRequest
-  async function fetchBase64(url) {
+  async function fetchPdfBase64(url) {
     let buf;
     try {
       const res = await fetch(url, { credentials: 'include' });
@@ -338,6 +348,9 @@
       }));
     }
     const bytes = new Uint8Array(buf);
+    if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') {
+      throw new Error('返回的不是 PDF：' + new TextDecoder().decode(bytes.subarray(0, 60)).replace(/\s+/g, ' '));
+    }
     if (bytes.length > 30 * 1024 * 1024) throw new Error('PDF 超过 30MB');
     let bin = '';
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
@@ -431,12 +444,15 @@
 
     // 只有 PDF 的题：题面里几乎没有文字。先在描述页里找 PDF 地址，找不到就用左侧面板的 PDF 按钮
     const textLen = statement.replace(/^#+ .*$/gm, '').replace(/\s/g, '').length;
-    if (!pdfUrl && textLen < 80) {
-      pdfUrl = findPdfUrl(html + '\n' + jsonText)
-        || document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href');
+    let pdfUrls = null;
+    if (textLen < 80) {
+      pdfUrls = [...new Set([
+        pdfUrl,
+        findPdfUrl(html + '\n' + jsonText),
+        document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href'),
+      ].filter(Boolean).map((u) => new URL(u, frame.src).href))];
+      if (!pdfUrls.length) pdfUrls = null;
     }
-    if (pdfUrl && textLen < 80) pdfUrl = new URL(pdfUrl, frame.src).href;
-    else pdfUrl = null;
 
     // 标题：先试已知的 id，再找形如“A - MST in Modulo Graph”的标题元素
     const titleEl = document.querySelector('#problem-title, #prob-title h2, #prob-title, .problem-title')
@@ -445,7 +461,7 @@
     // 题目页 / 比赛页上方的时空限制等信息
     const props = [...document.querySelectorAll('#prob-properties dt')]
       .map((dt) => `${dt.textContent.trim()}：${dt.nextElementSibling?.textContent.trim() || ''}`);
-    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement, pdfUrl };
+    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement, pdfUrl: pdfUrls?.[0], pdfUrls };
   }
 
   // 在 HTML / JSON 文本里找 PDF 地址：pdf.js 查看器的 ?file= 参数，或以 .pdf 结尾的链接
@@ -698,7 +714,9 @@
 
     waitFor(() => document.querySelector('div[contenteditable="true"]'), 20000).then(async (editor) => {
       if (!editor) { console.warn('[Contest→Claude] 没找到输入框，提示词已在剪贴板中，可手动粘贴'); return; }
-      if (data.pdf) attachPdf(editor, data.pdf);
+      // 页面刚加载完时输入框可能还会被重新渲染一次（会清掉已加的附件），先等它稳定
+      await sleep(1500);
+      editor = document.querySelector('div[contenteditable="true"]') || editor;
       editor.focus();
       // ProseMirror 能正确处理 insertText；失败则模拟粘贴
       const ok = document.execCommand('insertText', false, data.prompt);
@@ -707,32 +725,76 @@
         dt.setData('text/plain', data.prompt);
         editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       }
+      if (data.pdf && !(await attachPdf(editor, data.pdf))) return;
       if (!data.autoSend) return;
       const sendBtn = await waitFor(() => {
         const b = document.querySelector('button[aria-label="Send message"], button[aria-label="Send Message"], button[aria-label="发送消息"]');
         return b && !b.disabled ? b : null;
-      }, 10000);
+      }, 30000);
       if (sendBtn) sendBtn.click();
     });
   }
 
-  // 上传 PDF 附件：优先用页面上的文件选择框，没有就模拟粘贴文件
-  function attachPdf(editor, pdf) {
+  // 上传 PDF 附件。依次尝试三种方式，每种之后检查附件是否真的留在输入框里：
+  // 1. 模拟粘贴文件  2. 模拟拖放文件  3. 输入框附近的文件选择框
+  // 都失败就把 PDF 下载到本地，提示手动拖进来。
+  async function attachPdf(editor, pdf) {
     const bin = atob(pdf.data);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const file = new File([bytes], pdf.name || 'problem.pdf', { type: 'application/pdf' });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    const input = document.querySelector('input[type="file"][data-testid="file-upload"]')
-      || [...document.querySelectorAll('input[type="file"]')].find((i) => !i.accept || /pdf|\*/.test(i.accept))
-      || document.querySelector('input[type="file"]');
-    if (input) {
-      input.files = dt.files;
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    const name = pdf.name || 'problem.pdf';
+    const makeDt = () => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], name, { type: 'application/pdf' }));
+      return dt;
+    };
+    // 判断附件是否在：文件名在输入框以外出现的次数变多了（输入框里的标题文字本身也含文件名，要扣掉）
+    const stem = name.replace(/\.pdf$/i, '').slice(0, 12);
+    const count = (t) => t.split(stem).length - 1;
+    const outside = () => count(document.body.innerText) - count(editor.innerText);
+    const baseline = outside();
+    const attached = () => outside() > baseline;
+
+    const methods = {
+      paste: () => editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: makeDt(), bubbles: true, cancelable: true })),
+      drop: () => {
+        const dt = makeDt();
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+          editor.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+        }
+      },
+      input: () => {
+        // 找离输入框最近的文件选择框，避免选到项目知识库的上传框
+        let el = editor;
+        while (el && !el.querySelector('input[type="file"]')) el = el.parentElement;
+        const input = el?.querySelector('input[type="file"]');
+        if (!input) return false;
+        input.files = makeDt().files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+    };
+    for (const [label, run] of Object.entries(methods)) {
+      if (run() === false) continue;
+      // 附件会先出现再上传，上传失败会消失，所以要等一会儿再确认
+      await sleep(4000);
+      if (attached()) {
+        console.info('[Contest→Claude] PDF 已通过', label, '方式添加');
+        return true;
+      }
+      console.warn('[Contest→Claude] PDF 通过', label, '方式添加失败');
     }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    alert('PDF 自动上传失败，已下载到本地，请把它拖进对话框。');
+    return false;
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   function waitFor(fn, timeout) {
