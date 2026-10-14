@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.3.0
+// @version      0.4.0
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @match        https://codeforces.com/*
@@ -39,6 +39,7 @@
     // web 模式下打开的地址：填 Claude 项目链接则在该项目里新建对话；留空则用 https://claude.ai/new
     projectUrl: 'https://claude.ai/project/01a11f70-bbd7-727e-9e27-93b81bc5d979',
     maxTokens: 16000,
+    vjudgeSidebar: true,     // Vjudge 左侧面板里是否显示按钮
   };
   const cfg = (k) => GM_getValue(k, DEFAULTS[k]);
   const PENDING_KEY = 'pendingPrompt';
@@ -67,19 +68,93 @@
   // ---------------------------------------------------------------------------
   // 题目页面端
   // ---------------------------------------------------------------------------
+  // Claude 图标（白色透明底 PNG），用作 CSS mask，颜色跟随 currentColor
+  const ICON_URL = 'data:image/png;base64,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';
+  const isVjudge = location.hostname === 'vjudge.net';
+
   registerMenu();
-  const button = injectButton();
-  const syncButton = () => { button.style.display = isProblemPage() ? 'flex' : 'none'; };
-  syncButton();
-  window.addEventListener('hashchange', syncButton);
-  window.addEventListener('popstate', syncButton);
-  setInterval(syncButton, 500);
+  injectStyle();
+  const edgeTab = createEdgeTab();
+  let sidebarBtn = null;
+  syncUi();
+  window.addEventListener('hashchange', syncUi);
+  window.addEventListener('popstate', syncUi);
+  setInterval(syncUi, 500);
   document.addEventListener('keydown', (e) => {
     if (e.altKey && e.shiftKey && e.code === 'KeyC' && isProblemPage()) {
       e.preventDefault();
       sendToClaude();
     }
   });
+
+  // Vjudge：有左侧面板（#prob-operation）时把按钮放进面板，否则用屏幕边缘的悬浮标签
+  function syncUi() {
+    const onProblem = isProblemPage();
+    const panel = isVjudge ? document.querySelector('#prob-operation') : null;
+    if (panel) {
+      const show = onProblem && cfg('vjudgeSidebar');
+      if (show && (!sidebarBtn || !panel.contains(sidebarBtn))) {
+        sidebarBtn?.remove();
+        sidebarBtn = createSidebarRow();
+        panel.appendChild(sidebarBtn);
+      }
+      if (sidebarBtn) sidebarBtn.style.display = show ? '' : 'none';
+      edgeTab.style.display = 'none';
+    } else {
+      edgeTab.style.display = onProblem ? 'flex' : 'none';
+    }
+  }
+
+  function injectStyle() {
+    const style = document.createElement('style');
+    style.textContent = `
+      .cc-icon { display:inline-block; width:1.1em; height:1.1em; flex:none; vertical-align:-0.15em;
+        background-color:currentColor; -webkit-mask:url(${ICON_URL}) center/contain no-repeat; mask:url(${ICON_URL}) center/contain no-repeat; }
+      #cc-edge-tab { position:fixed; right:0; top:62%; z-index:2147483646; display:none; align-items:center; gap:8px;
+        padding:9px 14px 9px 11px; border:none; border-radius:999px 0 0 999px; cursor:pointer;
+        background:#d97757; color:#fff; font:600 14px/1 system-ui, sans-serif; white-space:nowrap;
+        box-shadow:0 2px 10px rgba(0,0,0,.25); transform:translateX(calc(100% - 33px)); transition:transform .2s ease; }
+      #cc-edge-tab:hover, #cc-edge-tab:focus-visible { transform:translateX(0); }
+      #cc-edge-tab .cc-icon { width:16px; height:16px; }
+      .cc-vjudge-btn .cc-icon { color:#d97757; margin-right:4px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function createIcon() {
+    const i = document.createElement('span');
+    i.className = 'cc-icon';
+    i.setAttribute('aria-hidden', 'true');
+    return i;
+  }
+
+  // 其它网站：贴在屏幕右侧边缘，平时只露出图标，鼠标移上去展开
+  function createEdgeTab() {
+    const btn = document.createElement('button');
+    btn.id = 'cc-edge-tab';
+    btn.title = '提取题面并发送给 Claude（Alt+Shift+C）。选中文字时只发送选中部分。';
+    btn.append(createIcon(), document.createTextNode('问 Claude'));
+    btn.addEventListener('click', sendToClaude);
+    document.body.appendChild(btn);
+    return btn;
+  }
+
+  // Vjudge 左侧面板里的一行，样式沿用面板里的 PDF 按钮
+  function createSidebarRow() {
+    const row = document.createElement('div');
+    row.className = 'row cc-vjudge-row';
+    const col = document.createElement('div');
+    col.className = 'col-12';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary cc-vjudge-btn';
+    btn.title = '提取题面并发送给 Claude（Alt+Shift+C）';
+    btn.append(createIcon(), document.createTextNode('问 Claude'));
+    btn.addEventListener('click', sendToClaude);
+    col.appendChild(btn);
+    row.appendChild(col);
+    return row;
+  }
 
   function registerMenu() {
     GM_registerMenuCommand(`模式：${cfg('mode') === 'web' ? '网页版 claude.ai' : 'API'}（点击切换）`, () => {
@@ -101,6 +176,10 @@
       if (url && !/^https:\/\/claude\.ai\/project\/[\w-]+\/?$/.test(url)) { alert('链接格式不对'); return; }
       GM_setValue('projectUrl', url);
     });
+    GM_registerMenuCommand(`Vjudge 侧边栏按钮：${cfg('vjudgeSidebar') ? '显示' : '隐藏'}（点击切换）`, () => {
+      GM_setValue('vjudgeSidebar', !cfg('vjudgeSidebar'));
+      toast('Vjudge 侧边栏按钮：' + (cfg('vjudgeSidebar') ? '显示' : '隐藏'));
+    });
     GM_registerMenuCommand(`API 模型：${cfg('model')}`, () => {
       const v = prompt('模型 ID', cfg('model'));
       if (v) GM_setValue('model', v.trim());
@@ -109,35 +188,6 @@
       const p = await buildMessage();
       if (p) { GM_setClipboard(p, 'text'); toast('已复制到剪贴板'); }
     });
-  }
-
-  function injectButton() {
-    const btn = document.createElement('button');
-    btn.title = '提取题面并发送给 Claude（Alt+Shift+C）。选中文字时只发送选中部分。';
-    Object.assign(btn.style, {
-      position: 'fixed', right: '20px', bottom: '20px', zIndex: 2147483646,
-      display: 'none', alignItems: 'center', gap: '6px',
-      padding: '10px 16px', border: 'none', borderRadius: '999px', cursor: 'pointer',
-      background: '#d97757', color: '#fff', fontSize: '14px', fontWeight: '600', lineHeight: '1',
-      boxShadow: '0 4px 14px rgba(0,0,0,.25)',
-    });
-    // 用内联 SVG 画图标，不依赖系统的 emoji 字体
-    const NS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('width', '16');
-    svg.setAttribute('height', '16');
-    svg.setAttribute('aria-hidden', 'true');
-    for (let i = 0; i < 4; i++) {
-      const line = document.createElementNS(NS, 'line');
-      Object.entries({ x1: 12, y1: 2, x2: 12, y2: 22, stroke: 'currentColor', 'stroke-width': 2.6,
-        'stroke-linecap': 'round', transform: `rotate(${i * 45} 12 12)` }).forEach(([k, v]) => line.setAttribute(k, v));
-      svg.appendChild(line);
-    }
-    btn.append(svg, document.createTextNode('问 Claude'));
-    btn.addEventListener('click', sendToClaude);
-    document.body.appendChild(btn);
-    return btn;
   }
 
   async function sendToClaude() {
@@ -206,11 +256,13 @@
     } catch (_) { /* ignore */ }
     if (!statement) statement = htmlToMarkdown(doc.body);
 
-    const titleEl = document.querySelector('#problem-title, #prob-title h2, #prob-title, .problem-title');
+    // 标题：先试已知的 id，再找形如“A - MST in Modulo Graph”的标题元素
+    const titleEl = document.querySelector('#problem-title, #prob-title h2, #prob-title, .problem-title')
+      || [...document.querySelectorAll('h1, h2, h3')].find((h) => /^\s*[A-Z]\d*\s+-\s+\S/.test(h.textContent));
     const title = (titleEl?.textContent || document.title).replace(/\s+/g, ' ');
     // 题目页 / 比赛页上方的时空限制等信息
-    const props = [...document.querySelectorAll('#prob-properties dl, #prob-properties li, .prob-property, dl.card-text')]
-      .map((e) => e.textContent.replace(/\s+/g, ' ').trim()).filter((t) => /limit|限制/i.test(t));
+    const props = [...document.querySelectorAll('#prob-properties dt')]
+      .map((dt) => `${dt.textContent.trim()}：${dt.nextElementSibling?.textContent.trim() || ''}`);
     return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement };
   }
 
