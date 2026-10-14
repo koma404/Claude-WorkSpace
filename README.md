@@ -29,7 +29,9 @@
 ## 安装
 
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)（或 Violentmonkey）。
-2. 新建脚本，把 [`claude-contest-helper.user.js`](./claude-contest-helper.user.js) 的内容整个粘进去，保存。
+2. 打开 <https://raw.githubusercontent.com/koma404/Claude-WorkSpace/HEAD/claude-contest-helper.user.js>，油猴会弹出安装页，点「安装」。
+
+这样装的脚本会自动跟 GitHub 同步：脚本头部的 `@updateURL` / `@downloadURL` 指向仓库默认分支上的这个文件，油猴定期检查，发现 `@version` 变大就自动更新（检查间隔在油猴「设置 → 脚本更新」里调，也可以在脚本列表里手动「检查更新」）。所以每次修改脚本都要把 `@version` 加一。菜单里的设置（项目链接、API Key、标签位置等）存在油猴存储里，更新不会丢；但直接在油猴编辑器里改的代码会被覆盖。
 
 ## 两种模式（在油猴菜单里切换）
 

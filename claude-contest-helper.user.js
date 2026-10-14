@@ -1,9 +1,12 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.0
+// @version      0.6.1
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
+// @homepageURL  https://github.com/koma404/Claude-WorkSpace
+// @updateURL    https://raw.githubusercontent.com/koma404/Claude-WorkSpace/HEAD/claude-contest-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/koma404/Claude-WorkSpace/HEAD/claude-contest-helper.user.js
 // @match        https://codeforces.com/*
 // @match        https://*.codeforces.com/*
 // @match        https://codeforc.es/*
