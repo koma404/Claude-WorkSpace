@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.6
+// @version      0.6.7
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -28,6 +28,7 @@
 // @connect      api.anthropic.com
 // @connect      vjudge.net
 // @connect      vjudge.net.cn
+// @connect      cdn.vjudge.net.cn
 // @connect      *
 // @run-at       document-idle
 // @noframes
@@ -306,6 +307,7 @@
       for (const url of msg.pdfUrls) {
         try {
           pdf = { name: msg.pdfName, data: await fetchPdfBase64(url) };
+          if (!msg.pdfUrl) msg.text = msg.text.replace(/题面见 PDF：.*$/, `题面见 PDF：${url}`);
           console.info('[Contest→Claude] PDF 来自', url);
           break;
         } catch (e) {
@@ -506,16 +508,23 @@
 
     // 只有 PDF 的题：正文几乎没有文字，并且描述页里确实有 PDF 的迹象（PDF 格式的 section、PDF 链接或嵌入的查看器）。
     // 左侧面板的 PDF 按钮每道题都有，只能当下载地址，不能当判断依据。
+    // Vjudge 的 PDF 题面在内容里写成 [pdf:CDN_BASE_URL/<hash>?<n>]，CDN_BASE_URL 是占位符
     let pdfUrls = null;
-    const descPdf = findPdfUrl(html + '\n' + jsonText);
-    const looksPdf = pdfUrl || descPdf || doc.querySelector('iframe, embed, object');
-    if (plainLen(statement) < 80 && looksPdf) {
-      pdfUrls = [...new Set([
-        pdfUrl !== 'pdf' && pdfUrl,
-        descPdf,
-        document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href'),
-      ].filter(Boolean).map((u) => new URL(u, src).href))];
+    let pdfLink = null;
+    const raw = html + '\n' + jsonText;
+    const marker = raw.match(/\[pdf:([^\]\s]+)\]/i)?.[1];
+    const markerUrls = !marker ? [] : /^CDN_BASE_URL/.test(marker)
+      ? cdnBases().map((base) => marker.replace(/^CDN_BASE_URL\/*/, base + '/'))
+      : [marker];
+    const descPdf = findPdfUrl(raw);
+    const looksPdf = marker || pdfUrl || descPdf || doc.querySelector('iframe, embed, object');
+    if (looksPdf && plainLen(statement.replace(/\[pdf:[^\]]*\]/gi, '')) < 80) {
+      const panelPdf = document.querySelector('#btn-contest-problem-pdf, a[href*="problemPdf"]')?.getAttribute('href');
+      const abs = (u) => new URL(u, src).href;
+      // 下载顺序：原始 PDF（CDN）优先，左侧面板的 PDF 按钮兜底；发给 Claude 的文字里用面板链接（能直接在浏览器打开）
+      pdfUrls = [...new Set([pdfUrl !== 'pdf' && pdfUrl, ...markerUrls, descPdf, panelPdf].filter(Boolean).map(abs))];
       if (!pdfUrls.length) pdfUrls = null;
+      pdfLink = panelPdf ? abs(panelPdf) : pdfUrls?.[0];
     }
 
     // 标题：先试已知的 id，再找形如“A - MST in Modulo Graph”的标题元素
@@ -525,7 +534,19 @@
     // 题目页 / 比赛页上方的时空限制等信息
     const props = [...document.querySelectorAll('#prob-properties dt')]
       .map((dt) => `${dt.textContent.trim()}：${dt.nextElementSibling?.textContent.trim() || ''}`);
-    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement, pdfUrl: pdfUrls?.[0], pdfUrls };
+    return { title, statement: (props.length ? props.join('\n') + '\n\n' : '') + statement, pdfUrl: pdfLink, pdfUrls };
+  }
+
+  // Vjudge 的 CDN 地址：页面里引用 cdn.vjudge.* 的资源（比如头像）的域名，再加上已知的两个
+  function cdnBases() {
+    const bases = [];
+    try { if (typeof unsafeWindow.CDN_BASE_URL === 'string') bases.push(unsafeWindow.CDN_BASE_URL); } catch (_) { /* ignore */ }
+    for (const el of document.querySelectorAll('img[src*="cdn."], script[src*="cdn."], link[href*="cdn."]')) {
+      const m = (el.src || el.href || '').match(/^https?:\/\/cdn\.vjudge\.[^/]+/);
+      if (m) bases.push(m[0]);
+    }
+    bases.push('https://cdn.vjudge.net.cn', 'https://cdn.vjudge.net');
+    return [...new Set(bases.map((b) => b.replace(/\/+$/, '')))];
   }
 
   // 在 HTML / JSON 文本里找 PDF 地址：pdf.js 查看器的 ?file= 参数，或以 .pdf 结尾的链接
