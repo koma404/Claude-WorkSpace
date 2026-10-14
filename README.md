@@ -1,6 +1,6 @@
 # Contest → Claude 一键解题（油猴脚本）
 
-在算法竞赛**题目页面**加一个 **问 Claude** 按钮（快捷键 `Alt+Shift+C`），一键提取题面发给 Claude。只发送题目本身（标题、链接、题面），不附加提示词，提示词交给 Claude 项目的自定义指令。
+在算法竞赛**题目页面**加两个按钮：**问 Claude**（`Alt+Shift+C`）一键提取题面发给 Claude，**复制 MD**（`Alt+Shift+M`）复制题目 Markdown。只发送题目本身（标题、链接、题面），不附加提示词，提示词交给 Claude 项目的自定义指令。
 
 ## 支持的网站
 
@@ -10,9 +10,10 @@
 | AtCoder | `#task-statement`，优先英文版，从 KaTeX annotation 还原公式，附带时空限制 |
 | 洛谷 | 优先读页面内嵌的 JSON（原始 Markdown 题面 + 样例），失败时退回读 DOM |
 | LeetCode / 力扣 | 题目描述区域 |
-| Vjudge | 比赛页 `#problem/X` 和单题页 `/problem/...`，从题面 iframe 对应的描述页提取 |
+| Vjudge | 比赛页 `#problem/X` 和单题页 `/problem/...`，从题面 iframe 对应的描述页提取，`$$$x$$$` 等 CF 原始公式写法统一成 `$x$` |
+| 代码源 newoj（Hydro） | 优先读 `UiContext.pdoc` 里的原始 Markdown，失败时读 `.problem-content` |
 
-按钮位置：Vjudge 放在左侧面板里（PDF 按钮下面，可在油猴菜单「Vjudge 侧边栏按钮」里隐藏）；其它网站贴在屏幕右侧边缘，平时只露出图标，鼠标移上去展开。
+按钮位置：Vjudge 放在左侧面板里（PDF 按钮下面，可在油猴菜单「Vjudge 侧边栏按钮」里隐藏）；其它网站贴在屏幕边缘，平时只露出图标，鼠标移上去展开；按住拖动可以上下移动，拖到左半屏就贴到左边，位置会记住（菜单「重置悬浮标签位置」可恢复）。
 
 按钮只在题目页面出现（比赛首页、题目列表、提交记录等页面不显示）：
 
@@ -21,6 +22,7 @@
 - 洛谷：`/problem/P1001` 这类
 - LeetCode：`/problems/<题目>/` 和 `/problems/<题目>/description/`
 - Vjudge：`/contest/<id>#problem/<题号>`、`/problem/<题目>`
+- 代码源 newoj：`/p/<题号>`
 
 其它网站：在脚本头部加一行 `// @match`，然后**选中题目文字**再点按钮即可（有选中文字时只发送选中部分）。
 
@@ -36,7 +38,7 @@
 
 把项目的自定义指令和知识库（模板、常用算法等）配好，脚本只负责把题目送进去。
 
-其它菜单项：Vjudge 侧边栏按钮显示/隐藏、API 模型 ID、仅复制题面。API 模式不经过项目，所以不会带上项目的自定义指令。
+其它菜单项：Vjudge 侧边栏按钮显示/隐藏、API 模型 ID、复制题目 Markdown、重置悬浮标签位置。API 模式不经过项目，所以不会带上项目的自定义指令。
 
 ## 注意
 

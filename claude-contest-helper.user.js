@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.4.0
-// @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge 题目页面一键提取题面，发送给 Claude（网页版或 API）
+// @version      0.5.0
+// @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @match        https://codeforces.com/*
 // @match        https://*.codeforces.com/*
@@ -12,6 +12,7 @@
 // @match        https://leetcode.com/*
 // @match        https://leetcode.cn/*
 // @match        https://vjudge.net/*
+// @match        https://newoj.daimayuan.top/*
 // @match        https://claude.ai/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -39,6 +40,7 @@
     // web 模式下打开的地址：填 Claude 项目链接则在该项目里新建对话；留空则用 https://claude.ai/new
     projectUrl: 'https://claude.ai/project/01a11f70-bbd7-727e-9e27-93b81bc5d979',
     maxTokens: 16000,
+    tabPos: null,            // 悬浮标签位置（拖动后自动保存）
     vjudgeSidebar: true,     // Vjudge 左侧面板里是否显示按钮
   };
   const cfg = (k) => GM_getValue(k, DEFAULTS[k]);
@@ -51,6 +53,7 @@
     { host: /^atcoder\.jp$/, path: /^\/contests\/[^/]+\/tasks\/[^/]+\/?$/ },
     { host: /^www\.luogu\.com\.cn$/, path: /^\/problem\/(?!list\/?$|solution\/)[\w-]+\/?$/ },
     { host: /^leetcode\.(com|cn)$/, path: /^\/problems\/[\w-]+(\/description)?\/?$/ },
+    { host: /^newoj\.daimayuan\.top$/, path: /^(\/d\/[^/]+)?\/p\/[^/]+\/?$/ },
     { host: /^vjudge\.net$/, path: /^\/problem\/(?!description\/)[^/]+\/?$/ },
     { host: /^vjudge\.net$/, path: /^\/contest\/\d+\/?$/, hash: /^#problem\/\w+/ },
   ];
@@ -75,16 +78,16 @@
   registerMenu();
   injectStyle();
   const edgeTab = createEdgeTab();
-  let sidebarBtn = null;
+  let sidebarRow = null;
   syncUi();
   window.addEventListener('hashchange', syncUi);
   window.addEventListener('popstate', syncUi);
+  window.addEventListener('resize', () => placeEdgeTab(edgeTab, cfg('tabPos')));
   setInterval(syncUi, 500);
   document.addEventListener('keydown', (e) => {
-    if (e.altKey && e.shiftKey && e.code === 'KeyC' && isProblemPage()) {
-      e.preventDefault();
-      sendToClaude();
-    }
+    if (!e.altKey || !e.shiftKey || !isProblemPage()) return;
+    if (e.code === 'KeyC') { e.preventDefault(); sendToClaude(); }
+    if (e.code === 'KeyM') { e.preventDefault(); copyMarkdown(); }
   });
 
   // Vjudge：有左侧面板（#prob-operation）时把按钮放进面板，否则用屏幕边缘的悬浮标签
@@ -93,12 +96,12 @@
     const panel = isVjudge ? document.querySelector('#prob-operation') : null;
     if (panel) {
       const show = onProblem && cfg('vjudgeSidebar');
-      if (show && (!sidebarBtn || !panel.contains(sidebarBtn))) {
-        sidebarBtn?.remove();
-        sidebarBtn = createSidebarRow();
-        panel.appendChild(sidebarBtn);
+      if (show && (!sidebarRow || !panel.contains(sidebarRow))) {
+        sidebarRow?.remove();
+        sidebarRow = createSidebarRow();
+        panel.appendChild(sidebarRow);
       }
-      if (sidebarBtn) sidebarBtn.style.display = show ? '' : 'none';
+      if (sidebarRow) sidebarRow.style.display = show ? '' : 'none';
       edgeTab.style.display = 'none';
     } else {
       edgeTab.style.display = onProblem ? 'flex' : 'none';
@@ -110,12 +113,20 @@
     style.textContent = `
       .cc-icon { display:inline-block; width:1.1em; height:1.1em; flex:none; vertical-align:-0.15em;
         background-color:currentColor; -webkit-mask:url(${ICON_URL}) center/contain no-repeat; mask:url(${ICON_URL}) center/contain no-repeat; }
-      #cc-edge-tab { position:fixed; right:0; top:62%; z-index:2147483646; display:none; align-items:center; gap:8px;
-        padding:9px 14px 9px 11px; border:none; border-radius:999px 0 0 999px; cursor:pointer;
-        background:#d97757; color:#fff; font:600 14px/1 system-ui, sans-serif; white-space:nowrap;
-        box-shadow:0 2px 10px rgba(0,0,0,.25); transform:translateX(calc(100% - 33px)); transition:transform .2s ease; }
-      #cc-edge-tab:hover, #cc-edge-tab:focus-visible { transform:translateX(0); }
+      #cc-edge-tab { position:fixed; right:0; top:62%; z-index:2147483646; display:none; align-items:center;
+        padding-right:4px; border-radius:999px 0 0 999px; background:#d97757; color:#fff;
+        font:600 14px/1 system-ui, sans-serif; white-space:nowrap; user-select:none; touch-action:none;
+        box-shadow:0 2px 10px rgba(0,0,0,.25); transform:translateX(calc(100% - 34px)); transition:transform .2s ease; }
+      #cc-edge-tab.cc-left { right:auto; left:0; flex-direction:row-reverse; padding:0 0 0 4px;
+        border-radius:0 999px 999px 0; transform:translateX(calc(-100% + 34px)); }
+      #cc-edge-tab:hover, #cc-edge-tab:focus-within, #cc-edge-tab.cc-dragging { transform:translateX(0); }
+      #cc-edge-tab.cc-dragging { transition:none; }
+      #cc-edge-tab .cc-handle { display:flex; align-items:center; justify-content:center; width:34px; height:34px; flex:none; cursor:grab; }
+      #cc-edge-tab.cc-dragging, #cc-edge-tab.cc-dragging * { cursor:grabbing; }
       #cc-edge-tab .cc-icon { width:16px; height:16px; }
+      #cc-edge-tab button { height:26px; margin:4px 0; padding:0 10px; border:none; border-radius:999px;
+        background:transparent; color:inherit; font:inherit; cursor:pointer; }
+      #cc-edge-tab button:hover { background:rgba(0,0,0,.15); }
       .cc-vjudge-btn .cc-icon { color:#d97757; margin-right:4px; }
     `;
     document.head.appendChild(style);
@@ -128,31 +139,90 @@
     return i;
   }
 
-  // 其它网站：贴在屏幕右侧边缘，平时只露出图标，鼠标移上去展开
+  // 其它网站：贴在屏幕边缘，平时只露出图标，鼠标移上去展开；按住拖动可换位置（拖到左半屏就贴左边）
   function createEdgeTab() {
-    const btn = document.createElement('button');
-    btn.id = 'cc-edge-tab';
-    btn.title = '提取题面并发送给 Claude（Alt+Shift+C）。选中文字时只发送选中部分。';
-    btn.append(createIcon(), document.createTextNode('问 Claude'));
-    btn.addEventListener('click', sendToClaude);
-    document.body.appendChild(btn);
-    return btn;
+    const tab = document.createElement('div');
+    tab.id = 'cc-edge-tab';
+    const handle = document.createElement('span');
+    handle.className = 'cc-handle';
+    handle.title = '按住拖动可调整位置';
+    handle.appendChild(createIcon());
+    const mk = (label, title, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', fn);
+      return b;
+    };
+    tab.append(handle,
+      mk('问 Claude', '提取题面并发送给 Claude（Alt+Shift+C）。选中文字时只发送选中部分。', sendToClaude),
+      mk('复制 MD', '复制题目 Markdown（Alt+Shift+M）', copyMarkdown));
+    document.body.appendChild(tab);
+    placeEdgeTab(tab, cfg('tabPos'));
+    makeDraggable(tab);
+    return tab;
   }
 
-  // Vjudge 左侧面板里的一行，样式沿用面板里的 PDF 按钮
+  // pos = { side: 'left' | 'right', top: 相对视口高度的比例 }
+  function placeEdgeTab(tab, pos) {
+    if (!pos) return;
+    tab.classList.toggle('cc-left', pos.side === 'left');
+    const max = Math.max(0, window.innerHeight - tab.offsetHeight - 4);
+    tab.style.top = Math.min(max, Math.max(4, pos.top * window.innerHeight)) + 'px';
+  }
+
+  function makeDraggable(tab) {
+    let justDragged = false;
+    tab.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const start = { x: e.clientX, y: e.clientY, offset: e.clientY - tab.getBoundingClientRect().top };
+      let pos = null;
+      // 监听 window 而不是标签本身：鼠标移动很快时会离开标签；也不用 setPointerCapture，否则按钮收不到 click
+      const move = (ev) => {
+        if (!pos && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 5) return;
+        tab.classList.add('cc-dragging');
+        pos = { side: ev.clientX < window.innerWidth / 2 ? 'left' : 'right', top: (ev.clientY - start.offset) / window.innerHeight };
+        placeEdgeTab(tab, pos);
+      };
+      const end = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', end);
+        window.removeEventListener('pointercancel', end);
+        tab.classList.remove('cc-dragging');
+        if (!pos) return;
+        GM_setValue('tabPos', { side: pos.side, top: parseFloat(tab.style.top) / window.innerHeight });
+        justDragged = true;
+        setTimeout(() => { justDragged = false; }, 0);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', end);
+      window.addEventListener('pointercancel', end);
+    });
+    // 拖动结束时松开鼠标会触发一次 click，吞掉它，避免误点按钮
+    tab.addEventListener('click', (e) => { if (justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  }
+
+  // Vjudge 左侧面板里的一行，样式沿用面板里的按钮
   function createSidebarRow() {
     const row = document.createElement('div');
     row.className = 'row cc-vjudge-row';
-    const col = document.createElement('div');
-    col.className = 'col-12';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn-secondary cc-vjudge-btn';
-    btn.title = '提取题面并发送给 Claude（Alt+Shift+C）';
-    btn.append(createIcon(), document.createTextNode('问 Claude'));
-    btn.addEventListener('click', sendToClaude);
-    col.appendChild(btn);
-    row.appendChild(col);
+    const mk = (label, title, fn, withIcon) => {
+      const col = document.createElement('div');
+      col.className = 'col-6';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-secondary cc-vjudge-btn';
+      btn.title = title;
+      if (withIcon) btn.appendChild(createIcon());
+      btn.appendChild(document.createTextNode(label));
+      btn.addEventListener('click', fn);
+      col.appendChild(btn);
+      return col;
+    };
+    row.append(
+      mk('问 Claude', '提取题面并发送给 Claude（Alt+Shift+C）', sendToClaude, true),
+      mk('复制 MD', '复制题目 Markdown（Alt+Shift+M）', copyMarkdown, false));
     return row;
   }
 
@@ -184,10 +254,17 @@
       const v = prompt('模型 ID', cfg('model'));
       if (v) GM_setValue('model', v.trim());
     });
-    GM_registerMenuCommand('仅复制题面到剪贴板', async () => {
-      const p = await buildMessage();
-      if (p) { GM_setClipboard(p, 'text'); toast('已复制到剪贴板'); }
+    GM_registerMenuCommand('复制题目 Markdown', copyMarkdown);
+    GM_registerMenuCommand('重置悬浮标签位置', () => {
+      GM_deleteValue('tabPos');
+      edgeTab.classList.remove('cc-left');
+      edgeTab.style.top = '';
     });
+  }
+
+  async function copyMarkdown() {
+    const md = await buildMessage();
+    if (md) { GM_setClipboard(md, 'text'); toast('已复制题目 Markdown'); }
   }
 
   async function sendToClaude() {
@@ -216,7 +293,20 @@
       toast('没能识别题面，请先选中题目文字再点按钮');
       return null;
     }
-    return `# ${problem.title.trim()}\n\n${location.href}\n\n${problem.statement.trim()}`;
+    return `# ${problem.title.trim()}\n\n${location.href}\n\n${normalizeMath(problem.statement.trim())}`;
+  }
+
+  // 统一公式定界符（代码块内不动）：Codeforces 原始题面用 $$$x$$$ 和 $$$$$$x$$$$$$
+  // （Vjudge 上的 CF 题会原样带出来），也有题面用 \( \) 和 \[ \]
+  function normalizeMath(md) {
+    const inline = (_, t) => '$' + t.trim() + '$';
+    const display = (_, t) => '\n$$' + t.trim() + '$$\n';
+    return md.split(/(```[\s\S]*?```)/).map((part, i) => (i % 2 ? part : part
+      .replace(/\${6}([\s\S]+?)\${6}/g, display)
+      .replace(/\${3}([\s\S]+?)\${3}/g, inline)
+      .replace(/\\\[([\s\S]+?)\\\]/g, display)
+      .replace(/\\\(([\s\S]+?)\\\)/g, inline)
+      .replace(/\n{3,}/g, '\n\n'))).join('');
   }
 
   // ---------------------------------------------------------------------------
@@ -229,7 +319,35 @@
     if (host === 'www.luogu.com.cn') return extractLuogu();
     if (/leetcode\./.test(host)) return extractLeetCode();
     if (host === 'vjudge.net') return extractVjudge();
+    if (host === 'newoj.daimayuan.top') return extractHydro();
     return null;
+  }
+
+  // 代码源 newoj（Hydro 系统）：优先读 UiContext.pdoc 里的原始 Markdown，读不到就读页面 DOM
+  function extractHydro() {
+    let pdoc = null;
+    try { pdoc = unsafeWindow.UiContext?.pdoc; } catch (_) { /* ignore */ }
+    let statement = '';
+    let content = pdoc?.content;
+    if (typeof content === 'string') {
+      // 多语言题面存成 {"zh": "...", "en": "..."} 的 JSON 字符串
+      try {
+        const obj = JSON.parse(content);
+        if (obj && typeof obj === 'object') content = obj.zh || obj.en || Object.values(obj)[0];
+      } catch (_) { /* 普通 Markdown */ }
+      statement = typeof content === 'string' ? content : '';
+    }
+    if (!statement) {
+      const el = document.querySelector('.problem-content, [data-fragment-id="problem-description"]');
+      if (el) statement = htmlToMarkdown(el);
+    }
+    const c = pdoc?.config;
+    const limits = c && typeof c === 'object' && (c.timeMax || c.memoryMax)
+      ? `时间限制：${c.timeMax ?? '?'} ms，内存限制：${c.memoryMax ?? '?'} MB\n\n` : '';
+    const title = pdoc?.title
+      ? `${pdoc.pid || pdoc.docId || ''} ${pdoc.title}`
+      : (document.querySelector('.section__title, h1')?.textContent || document.title);
+    return { title, statement: statement ? limits + statement : '' };
   }
 
   // Vjudge：题面在 iframe（/problem/description/...）里，同源，直接重新请求一份解析。
