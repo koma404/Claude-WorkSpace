@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.1.0
+// @version      0.2.0
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @match        https://codeforces.com/*
@@ -36,6 +36,8 @@
     language: 'C++',         // 期望的代码语言
     apiKey: '',              // api 模式需要
     model: 'claude-opus-5-5',
+    // web 模式下打开的地址：填 Claude 项目链接则在该项目里新建对话；留空则用 https://claude.ai/new
+    projectUrl: 'https://claude.ai/project/01a11f70-bbd7-727e-9e27-93b81bc5d979',
     maxTokens: 16000,
   };
   const cfg = (k) => GM_getValue(k, DEFAULTS[k]);
@@ -94,6 +96,13 @@
       const v = prompt('Anthropic API Key（仅保存在本地油猴存储中）', cfg('apiKey'));
       if (v !== null) GM_setValue('apiKey', v.trim());
     });
+    GM_registerMenuCommand(`Claude 项目：${cfg('projectUrl') || '无（claude.ai/new）'}`, () => {
+      const v = prompt('Claude 项目链接（形如 https://claude.ai/project/xxxx），留空则不使用项目', cfg('projectUrl'));
+      if (v === null) return;
+      const url = v.trim();
+      if (url && !/^https:\/\/claude\.ai\/project\/[\w-]+\/?$/.test(url)) { alert('链接格式不对'); return; }
+      GM_setValue('projectUrl', url);
+    });
     GM_registerMenuCommand(`API 模型：${cfg('model')}`, () => {
       const v = prompt('模型 ID', cfg('model'));
       if (v) GM_setValue('model', v.trim());
@@ -126,7 +135,7 @@
       askApi(promptText);
     } else {
       GM_setValue(PENDING_KEY, { prompt: promptText, autoSend: cfg('autoSend'), ts: Date.now() });
-      GM_openInTab('https://claude.ai/new', { active: true, insert: true });
+      GM_openInTab(cfg('projectUrl') || 'https://claude.ai/new', { active: true, insert: true });
       toast('已打开 claude.ai（提示词也已复制到剪贴板）');
     }
   }
@@ -391,7 +400,8 @@
   // claude.ai 端实现
   // ---------------------------------------------------------------------------
   function runOnClaude() {
-    if (!location.pathname.startsWith('/new')) return;
+    // 只在“新对话”页面（/new 或项目首页）填入
+    if (!/^\/(new|project\/[\w-]+\/?$)/.test(location.pathname)) return;
     const data = GM_getValue(PENDING_KEY);
     if (!data || Date.now() - data.ts > PENDING_TTL) return;
     GM_deleteValue(PENDING_KEY); // 只消费一次，避免其它标签页重复填入
