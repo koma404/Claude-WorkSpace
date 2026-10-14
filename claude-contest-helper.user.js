@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Contest → Claude 一键解题
 // @namespace    https://github.com/koma404/claude-workspace
-// @version      0.6.9
+// @version      0.6.10
 // @description  在 Codeforces / AtCoder / 洛谷 / LeetCode / Vjudge / 代码源 题目页面一键提取题面，发送给 Claude（网页版或 API）
 // @author       koma404
 // @homepageURL  https://github.com/koma404/Claude-WorkSpace
@@ -93,11 +93,12 @@
   window.addEventListener('popstate', syncUi);
   window.addEventListener('resize', () => placeEdgeTab(edgeTab, cfg('tabPos')));
   setInterval(syncUi, 500);
-  document.addEventListener('keydown', (e) => {
+  // 在 window 捕获阶段监听，避免被网站自己的快捷键处理拦掉
+  window.addEventListener('keydown', (e) => {
     if (!e.altKey || !e.shiftKey || !isProblemPage()) return;
     if (e.code === 'KeyC') { e.preventDefault(); sendToClaude(); }
     if (e.code === 'KeyM') { e.preventDefault(); copyMarkdown(); }
-  });
+  }, true);
 
   // Vjudge：有左侧面板（#prob-operation）时把按钮放进面板，否则用屏幕边缘的悬浮标签
   function syncUi() {
@@ -279,7 +280,7 @@
         const html = await (await fetch(frameUrl(frame), { credentials: 'include' })).text();
         const all = descFrames().map((f) => `${f === frame ? '* ' : '  '}${frameUrl(f)}${frameUrl(f) !== f.src ? `（src 属性：${f.src}）` : ''}${isVisible(f) ? '' : '（隐藏）'}`).join('\n');
         const activeKey = document.querySelector('#prob-descs .active[data-key]')?.dataset.key || '无';
-        GM_setClipboard(`当前选中的题面 key：${activeKey}\n所有题面 iframe（* 为本次使用的）：\n${all}\n\n${html.slice(0, 30000)}`, 'text');
+        copyText(`当前选中的题面 key：${activeKey}\n所有题面 iframe（* 为本次使用的）：\n${all}\n\n${html.slice(0, 30000)}`, 'text');
         toast('已复制描述页源码（前 3 万字符）');
       });
     }
@@ -318,14 +319,48 @@
     const text = parts.join('\n') + '\n\n' + html;
     console.log('[Contest→Claude] 调试信息\n' + text);
     showPanel(text);
-    try { GM_setClipboard(text, 'text'); toast('已复制页面信息；也可以在面板里点「复制全部」'); } catch (e) { toast('复制失败，请在面板里手动复制'); }
+    toast(await copyText(text) ? '已复制页面信息；也可以在面板里点「复制全部」' : '复制失败，请在面板里手动复制');
   }
 
   async function copyMarkdown() {
     const msg = await buildMessage();
     if (!msg) return;
-    GM_setClipboard(msg.text, 'text');
+    if (!(await copyText(msg.text))) { showPanel(msg.text); toast('复制失败，请在面板里手动复制'); return; }
     toast(msg.pdfUrl ? '本题只有 PDF 题面，已复制标题和 PDF 链接' : '已复制题目 Markdown');
+  }
+
+  // 写剪贴板。有的 OJ 会监听 copy 事件拦截或改写复制内容，GM_setClipboard 可能因此失效，所以：
+  // 1. 优先用 navigator.clipboard（不触发页面的 copy 事件）
+  // 2. 再用 execCommand('copy')，同时在捕获阶段抢先处理 copy 事件，写入我们的内容
+  // 3. 最后才用 GM_setClipboard
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) { /* 页面没有焦点等情况会失败 */ }
+    const onCopy = (e) => {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', text);
+    };
+    const ta = document.createElement('textarea');
+    try {
+      window.addEventListener('copy', onCopy, true);
+      ta.value = text;
+      Object.assign(ta.style, { position: 'fixed', top: '0', left: '0', opacity: '0' });
+      document.body.appendChild(ta);
+      ta.select();
+      if (document.execCommand('copy')) return true;
+    } catch (_) { /* ignore */ } finally {
+      window.removeEventListener('copy', onCopy, true);
+      ta.remove();
+    }
+    try {
+      GM_setClipboard(text, 'text');
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   let sending = false;
@@ -338,7 +373,7 @@
   async function doSendToClaude() {
     const msg = await buildMessage();
     if (!msg) return;
-    GM_setClipboard(msg.text, 'text'); // 兜底：自动填入失败时可直接粘贴
+    copyText(msg.text); // 兜底：自动填入失败时可直接粘贴
     let pdf = null;
     if (msg.pdfUrls) {
       toast('本题只有 PDF 题面，正在下载 PDF…');
@@ -824,10 +859,10 @@
       mkBtn('复制代码', () => {
         const blocks = [...body.textContent.matchAll(/```[^\n]*\n([\s\S]*?)```/g)];
         if (!blocks.length) { toast('没有找到代码块'); return; }
-        GM_setClipboard(blocks[blocks.length - 1][1], 'text');
+        copyText(blocks[blocks.length - 1][1]);
         toast('已复制最后一个代码块');
       }),
-      mkBtn('复制全部', () => { GM_setClipboard(body.textContent, 'text'); toast('已复制'); }),
+      mkBtn('复制全部', async () => toast(await copyText(body.textContent) ? '已复制' : '复制失败，请手动选中复制')),
       mkBtn('关闭', () => wrap.remove()),
     );
     wrap.append(bar, body);
