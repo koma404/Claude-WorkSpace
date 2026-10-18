@@ -5,7 +5,11 @@ description: 把批量、自包含的机械活（批量翻译/总结/分类/打�
 
 # 把便宜的活分给 DeepSeek
 
-脚本：`.claude/skills/delegate/delegate.py`。结果写文件，终端只打印一行状态，模型的完整输出不进入主上下文。
+脚本 `delegate.py` 与本文件在同一目录（Skill 加载时给出的 Base directory）。本 Skill 可能来自附加的另一个仓库，不在当前工作目录，所以先定位脚本：
+```
+DELEGATE=$(find / -path '*/skills/delegate/delegate.py' -not -path '*/node_modules/*' 2>/dev/null | head -1)
+```
+下面的命令都用 `$DELEGATE` 代替路径。结果写文件，终端只打印一行状态，模型的完整输出不进入主上下文。
 
 ## 先判断值不值得分
 
@@ -18,12 +22,12 @@ description: 把批量、自包含的机械活（批量翻译/总结/分类/打�
 
 单任务：
 ```
-python3 .claude/skills/delegate/delegate.py --task "指令" --input in.md --out out/result.md
+python3 $DELEGATE --task "指令" --input in.md --out out/result.md
 ```
 
 批量（jsonl，每行 `{"id": "...", "prompt": "..."}`，可选 `"input"` 指向要附带的文件；也可用 `--task` 给统一指令）：
 ```
-python3 .claude/skills/delegate/delegate.py --batch jobs.jsonl --out out/results.jsonl --workers 8
+python3 $DELEGATE --batch jobs.jsonl --out out/results.jsonl --workers 8
 ```
 结果每行 `{"id", "ok", "output"|"error"}`。
 
